@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/Logo-L.png" alt="Cirq-Studio-Logo" width="500"/>
+  <img src="./Assets/Logo-L.png" alt="Cirq-Studio-Logo" width="500"/>
 
 ![Status](https://img.shields.io/badge/Status-Pre--Alpha-orange)
 ![License](https://img.shields.io/badge/License-GPL_3.0-green)
