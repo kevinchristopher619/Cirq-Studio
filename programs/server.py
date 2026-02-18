@@ -52,7 +52,6 @@ class RunRequest(BaseModel):
 def get_cached_transpiled_circuit(circuit_json: str, target_name: str) -> cirq.Circuit:
     """
     Deserializes and transpiles. 
-    If this exact JSON + Target combo was seen before, returns result instantly.
     """
     # 1. Deserialize
     circuit = cirq.read_json(json_text=circuit_json)
@@ -65,9 +64,12 @@ def get_cached_transpiled_circuit(circuit_json: str, target_name: str) -> cirq.C
     if not gateset:
         raise ValueError(f"Unknown target: {target_name}")
 
-    logger.info(f"Transpiling (Cache Miss) -> {target_name}")
-    return cirq.optimize_for_target_gateset(circuit, gateset=gateset)
-
+    logger.info(f"Transpiling (Cache Miss) -> {target_name.upper()}")
+    
+    # CRITICAL: This function returns a NEW circuit. It is NOT in-place.
+    transpiled_circuit = cirq.optimize_for_target_gateset(circuit, gateset=gateset)
+    
+    return transpiled_circuit
 
 def apply_noise(circuit: cirq.Circuit, noise_config: NoiseConfig) -> cirq.Circuit:
     if not noise_config: return circuit
