@@ -1,47 +1,108 @@
 import requests
 import cirq
 import json
+import time
 
-def run_test(name, circuit, repetitions=100):
-    print(f"--- Running Test: {name} ---")
-    payload = {
-        "circuit": cirq.to_json(circuit),
-        "repetitions": repetitions
-    }
-    try:
-        response = requests.post("http://localhost:5001/run", json=payload)
-        if response.status_code == 200:
-            data = response.json()
-            print(f"Status: {data['status']}")
-            print(f"Backend Used: {data['backend']}")
-            print(f"Qubit Count: {data['qubit_count']}")
-            # Only print results if it's the small circuit to avoid spamming the console
-            #if data['qubit_count'] < 5:
-            print(f"Results: {data['results']}")
-        else:
-            print("Error:", response.text)
-    except Exception as e:
-        print(f"Connection failed: {e}")
-    print("\n")
+# --- SETUP ---
+SERVER_URL = "http://localhost:5001/run"
 
-# Test 1: Small Circuit (Should use CPU)
-q0, q1 = cirq.LineQubit.range(2)
-small_circuit = cirq.Circuit(
+# Define Circuit (Bell State on Sycamore Grid)
+q0 = cirq.GridQubit(4, 4)
+q1 = cirq.GridQubit(4, 5)
+circuit = cirq.Circuit(
     cirq.H(q0),
     cirq.CNOT(q0, q1),
-    cirq.measure(q0, q1, key='m')
+    cirq.measure(q0, q1, key='result')
 )
 
-# Test 2: Large Circuit (Should attempt GPU)
-# We create 21 qubits to trigger the >20 threshold
-qubits = cirq.LineQubit.range(21)
-large_circuit = cirq.Circuit(
-    # Just apply Identity to all to verify count, plus one H on q0
-    cirq.H(qubits[0]),
-    [cirq.I(q) for q in qubits],
-    cirq.measure(qubits, key='m')
-)
+def run_suite():
+    # Use a Session for connection pooling (Performance Optimization)
+    session = requests.Session()
+    
+    # Pre-calculate circuit JSON once
+    circuit_json = cirq.to_json(circuit)
+
+    # --- TEST SCENARIOS (Data-Driven) ---
+    tests = [
+        {
+            "name": "Baseline (Generic)",
+            "payload": {
+                "circuit": circuit_json, 
+                "target": "generic", 
+                "simulation_type": "perfect"
+            }
+        },
+        {
+            "name": "Google Sycamore (Transpilation Check)",
+            "payload": {
+                "circuit": circuit_json, 
+                "target": "sycamore", 
+                "simulation_type": "perfect"
+            }
+        },
+        {
+            "name": "Sycamore (Noisy Simulation)",
+            "payload": {
+                "circuit": circuit_json, 
+                "target": "sycamore", 
+                "simulation_type": "noisy",
+                "noise_config": {
+                    "type": "depolarizing",
+                    "p": 0.08,
+                    "readout_p": 0.05
+                }
+            }
+        },
+        {
+            "name": "IonQ / Linear Trap",
+            "payload": {
+                "circuit": circuit_json, 
+                "target": "ionq", 
+                "simulation_type": "perfect"
+            }
+        }
+    ]
+
+    print(f"Starting Test Suite on {SERVER_URL}...\n")
+
+    for test in tests:
+        name = test["name"]
+        payload = test["payload"]
+        
+        print(f"=== TEST: {name} ===")
+        print(f"Config: {payload['target']} | {payload['simulation_type']}")
+        
+        start = time.time()
+        
+        try:
+            response = session.post(SERVER_URL, json=payload)
+            response.raise_for_status() # Raises error for 4xx/5xx
+            
+            data = response.json()
+            elapsed = round(time.time() - start, 3)
+
+            # Success Output
+            config = data.get('config', {})
+            results = data.get('results', {})
+            depth = data.get('depth')
+            
+            print(f"Status: Success ({elapsed}s)")
+            print(f"Depth: {depth}")
+            
+            # Simplified Histogram Display
+            sorted_res = dict(sorted(results.items(), key=lambda item: item[1], reverse=True))
+            print(f"Results: {json.dumps(sorted_res)}")
+            
+        except requests.exceptions.ConnectionError:
+            print("ERROR: Connection refused. Is server.py running?")
+            break
+        except requests.exceptions.HTTPError as e:
+            print(f"HTTP ERROR: {e}")
+            print(f"Details: {response.text}")
+        except Exception as e:
+            print(f" unexpected ERROR: {e}")
+            
+        print("-" * 40 + "\n")
 
 if __name__ == "__main__":
-    run_test("Small Circuit (<20 Qubits)", small_circuit)
-    run_test("Large Circuit (>20 Qubits)", large_circuit)
+    run_suite()

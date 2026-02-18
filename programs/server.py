@@ -1,95 +1,123 @@
-import os
 import logging
-from flask import Flask, request, jsonify
+import uvicorn
+import hashlib
+from functools import lru_cache
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import ORJSONResponse  # OPTIMIZATION 2: Faster JSON
+from pydantic import BaseModel, Field
+from typing import Optional
+
 import cirq
+import cirq_google
 import qsimcirq
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("QuantumEngine")
 
-app = Flask(__name__)
+# OPTIMIZATION 2: Use ORJSONResponse by default for all endpoints
+app = FastAPI(default_response_class=ORJSONResponse)
 
-def get_simulator_options(prefer_gpu=False):
+# --- HARDWARE SETUP ---
+try:
+    SYCAMORE_QUBITS = cirq_google.Sycamore.metadata.qubit_set
+except AttributeError:
+    SYCAMORE_QUBITS = set(cirq_google.Sycamore.qubits)
+
+GATESET_MAP = {
+    "sycamore": cirq_google.SycamoreTargetGateset(),
+    "ionq": cirq.CZTargetGateset(allow_partial_czs=True),
+    "linear": cirq.CZTargetGateset(allow_partial_czs=True),
+}
+
+# --- PYDANTIC MODELS ---
+class NoiseConfig(BaseModel):
+    type: str = "depolarizing"
+    p: float = 0.001
+    readout_p: float = 0.0
+
+class RunRequest(BaseModel):
+    circuit: str
+    target: str = "generic"
+    simulation_type: str = "perfect"
+    noise_config: Optional[NoiseConfig] = None
+    repetitions: int = 1000
+
+# --- CORE LOGIC ---
+
+# OPTIMIZATION 1: Caching Transpilation
+# We cannot cache 'cirq.Circuit' objects directly, so we cache based on the
+# unique hash of the JSON string and the target name.
+@lru_cache(maxsize=1024)
+def get_cached_transpiled_circuit(circuit_json: str, target_name: str) -> cirq.Circuit:
     """
-    Returns qsim options.
-    - If prefer_gpu is False: Returns CPU options immediately.
-    - If prefer_gpu is True: Attempts to use GPU. If hardware check fails, falls back to CPU.
+    Deserializes and transpiles. 
+    If this exact JSON + Target combo was seen before, returns result instantly.
     """
-    if not prefer_gpu:
-        return qsimcirq.QSimOptions(use_gpu=False)
+    # 1. Deserialize
+    circuit = cirq.read_json(json_text=circuit_json)
+    
+    # 2. Transpile
+    if target_name == "generic":
+        return circuit
 
-    # Attempt GPU initialization
+    gateset = GATESET_MAP.get(target_name)
+    if not gateset:
+        raise ValueError(f"Unknown target: {target_name}")
+
+    logger.info(f"Transpiling (Cache Miss) -> {target_name}")
+    return cirq.optimize_for_target_gateset(circuit, gateset=gateset)
+
+
+def apply_noise(circuit: cirq.Circuit, noise_config: NoiseConfig) -> cirq.Circuit:
+    if not noise_config: return circuit
+    # Noise is fast enough that caching is rarely worth the memory trade-off
+    if noise_config.type == 'depolarizing':
+        circuit = circuit.with_noise(cirq.depolarize(noise_config.p))
+    if noise_config.readout_p > 0:
+        circuit = circuit.with_noise(cirq.bit_flip(noise_config.readout_p))
+    return circuit
+
+# --- ENDPOINT ---
+@app.post("/run")
+def run_circuit(payload: RunRequest):
     try:
-        options = qsimcirq.QSimOptions(use_gpu=True)
+        # STEP A: Get Transpiled Circuit (Cached)
+        # We pass the raw JSON string to the cache function
+        try:
+            exec_circuit = get_cached_transpiled_circuit(payload.circuit, payload.target)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # STEP B: Apply Noise (Physics)
+        # We must copy here because 'exec_circuit' might come from the Cache,
+        # and we don't want to modify the cached version with noise!
+        if payload.simulation_type == 'noisy' and payload.noise_config:
+            exec_circuit = apply_noise(exec_circuit, payload.noise_config)
         
-        # Robust Check: Run a tiny dummy circuit to ensure GPU drivers are responding
-        sim = qsimcirq.QSimSimulator(qsim_options=options)
-        q_dummy = cirq.LineQubit(0)
-        sim.run(cirq.Circuit(cirq.I(q_dummy),cirq.measure(q_dummy,key='m')), repetitions=1)
-        
-        logger.info("Hardware Check Passed: Using NVIDIA GPU.")
-        return options
-    except Exception as e:
-        logger.warning(f"GPU requested but failed check ({str(e)}). Falling back to CPU.")
-        return qsimcirq.QSimOptions(use_gpu=False)
+        # STEP C: Run Simulation
+        num_qubits = len(exec_circuit.all_qubits())
+        # Heuristic: GPU if qubits > 20
+        options = qsimcirq.QSimOptions(use_gpu=(num_qubits > 20))
+        qsim_sim = qsimcirq.QSimSimulator(qsim_options=options)
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "ready", "engine": "qsimcirq"}), 200
+        result = qsim_sim.run(exec_circuit, repetitions=payload.repetitions)
 
-@app.route('/run', methods=['POST'])
-def run_circuit():
-    try:
-        data = request.get_json()
-        if not data or 'circuit' not in data:
-            return jsonify({"error": "Missing 'circuit' payload"}), 400
-
-        # 1. Deserialize
-        circuit = cirq.read_json(json_text=data['circuit'])
-        
-        # 2. Analyze Complexity
-        # We count the unique qubits in the circuit
-        num_qubits = len(circuit.all_qubits())
-        
-        # 3. Determine Strategy
-        # Threshold: 20 qubits
-        use_gpu_strategy = num_qubits > 20
-        
-        if use_gpu_strategy:
-            logger.info(f"Circuit has {num_qubits} qubits. Attempting GPU execution.")
-        else:
-            logger.info(f"Circuit has {num_qubits} qubits. Using CPU execution (Threshold: >20).")
-
-        # 4. Configure Simulator
-        qsim_options = get_simulator_options(prefer_gpu=use_gpu_strategy)
-        qsim_sim = qsimcirq.QSimSimulator(qsim_options=qsim_options)
-
-        # 5. Execute
-        repetitions = data.get('repetitions', 1000)
-        result = qsim_sim.run(circuit, repetitions=repetitions)
-
-        # 6. Format Output
+        # STEP D: Format Results
+        # Optimization: qsim returns counters, we can just return that dict directly
+        # but we need to convert keys (tuples) to strings for JSON.
         histogram = result.multi_measurement_histogram(keys=result.measurements.keys())
-        json_histogram = {
-            "".join(str(bit) for bit in k): v 
-            for k, v in histogram.items()
+        
+        return {
+            "status": "success",
+            "results": {"".join(str(b) for b in k): v for k, v in histogram.items()},
+            "depth": len(exec_circuit),
+            "backend": payload.target
         }
 
-        # 7. Identify Backend Used for Response
-        # This helps the frontend display "Ran on NVIDIA A100" vs "Ran on CPU"
-        backend_used = "qsim_gpu" if qsim_options.use_gpu else "qsim_cpu"
-
-        return jsonify({
-            "status": "success",
-            "results": json_histogram,
-            "backend": backend_used,
-            "qubit_count": num_qubits
-        })
-
     except Exception as e:
-        logger.error(f"Execution Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    uvicorn.run(app, host='0.0.0.0', port=5001)
