@@ -1,0 +1,18 @@
+name: quantum-env
+channels:
+  - defaults
+dependencies:
+  - cutensor=2.4.1.4
+  - gcc
+  - pip
+  - cupy=13.6.0
+  - cuda-toolkit=13.1.1
+  - gxx
+  - setuptools
+  - custatevec=1.11.0
+  - python=3.11
+  - cutensornet=2.10.1
+  - cuquantum-python=23.03.0
+  - cmake
+  - wheel
+prefix: /home/kevin/miniconda3/envs/quantum-env

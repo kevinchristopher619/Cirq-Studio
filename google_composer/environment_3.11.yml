@@ -1,0 +1,42 @@
+name: quantum-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python & Build Tools
+  - python=3.11
+  - pip
+  - setuptools
+  - wheel
+  - cmake
+  - gcc
+  - gxx
+  
+  # CUDA & Quantum Foundations (Hashes stripped for Py311 compatibility)
+  - cuda-toolkit=13.1.1
+  - cupy=13.6.0
+  - cuquantum-python=23.03.0
+  - custatevec=1.11.0
+  - cutensor=2.4.1.4
+  - cutensornet=2.10.1
+  
+  # Pip Packages
+  - pip:
+      - absl-py==2.3.1
+      - attrs==25.4.0
+      - cirq==1.5.0
+      - cirq-aqt==1.5.0
+      - cirq-core==1.5.0
+      - cirq-google==1.5.0
+      - cirq-ionq==1.5.0
+      - cirq-pasqal==1.5.0
+      - cirq-web==1.5.0
+      - matplotlib==3.10.8
+      - networkx==3.4.2
+      - numpy==2.2.6
+      - pandas==2.3.3
+      - protobuf==5.29.5
+      - pybind11==3.0.1
+      - scipy==1.15.3
+      - sympy==1.14.0
+      - tqdm==4.67.1
