@@ -54,7 +54,7 @@ func (p *Processor) ProcessTask(ctx context.Context, t *asynq.Task) error {
 	// Update status to RUNNING
 	_, err := p.firestoreClient.Collection("jobs").Doc(payload.JobID).Update(ctx, []firestore.Update{
 		{Path: "status", Value: "RUNNING"},
-		{Path: "updated_at", Value: time.Now().Unix()},
+		{Path: "updated_at", Value: time.Now()},
 	})
 	if err != nil {
 		log.Printf("Failed to update status to RUNNING for job %s: %v", payload.JobID, err)
@@ -103,7 +103,7 @@ func (p *Processor) ProcessTask(ctx context.Context, t *asynq.Task) error {
 	_, err = p.firestoreClient.Collection("jobs").Doc(payload.JobID).Update(ctx, []firestore.Update{
 		{Path: "status", Value: "COMPLETED"},
 		{Path: "result", Value: result},
-		{Path: "updated_at", Value: time.Now().Unix()},
+		{Path: "updated_at", Value: time.Now()},
 	})
 
 	if err != nil {
@@ -120,6 +120,6 @@ func (p *Processor) failJob(ctx context.Context, jobID, errorMsg string) {
 	p.firestoreClient.Collection("jobs").Doc(jobID).Update(ctx, []firestore.Update{
 		{Path: "status", Value: "FAILED"},
 		{Path: "error", Value: errorMsg},
-		{Path: "updated_at", Value: time.Now().Unix()},
+		{Path: "updated_at", Value: time.Now()},
 	})
 }

@@ -70,42 +70,55 @@ func initFirebase() (*auth.Client, *firestore.Client) {
 	return authClient, fsClient
 }
 
+func performGarbageCollection(fsClient *firestore.Client) (int, []string, error) {
+	log.Println("Running background garbage collection...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Find all jobs where ExpiresAt is in the past
+	now := time.Now()
+	iter := fsClient.Collection("jobs").Where("expires_at", "<", now).Documents(ctx)
+
+	deletedCount := 0
+	var deletedIds []string
+	for {
+		doc, err := iter.Next()
+		if errors.Is(err, iterator.Done) {
+			break // Reached the end of the results
+		}
+		if err != nil {
+			log.Printf("Error iterating during garbage collection: %v", err)
+			return deletedCount, deletedIds, err
+		}
+
+		// Delete the expired document
+		_, err = doc.Ref.Delete(ctx)
+		if err == nil {
+			deletedCount++
+			deletedIds = append(deletedIds, doc.Ref.ID)
+			log.Printf("Garbage Collector deleted expired JobID: %s", doc.Ref.ID)
+		} else {
+			log.Printf("Failed to delete expired JobID %s: %v", doc.Ref.ID, err)
+		}
+	}
+	if deletedCount > 0 {
+		log.Printf("Garbage collection complete. Deleted %d old jobs.", deletedCount)
+	} else {
+		log.Println("Garbage collection complete. No expired jobs found.")
+	}
+	return deletedCount, deletedIds, nil
+}
+
 // startGarbageCollector runs a background loop to delete expired jobs for free
 func startGarbageCollector(fsClient *firestore.Client) {
 	ticker := time.NewTicker(1 * time.Hour) // Run every hour
 
 	go func() {
+		// Run once immediately on startup
+		_, _, _ = performGarbageCollection(fsClient)
+
 		for range ticker.C {
-			log.Println("Running background garbage collection...")
-			ctx := context.Background()
-
-			// Find all jobs where ExpiresAt is in the past
-			now := time.Now()
-			iter := fsClient.Collection("jobs").Where("expires_at", "<", now).Documents(ctx)
-
-			deletedCount := 0
-			for {
-				doc, err := iter.Next()
-				if errors.Is(err, iterator.Done) {
-					break // Reached the end of the results
-				}
-				if err != nil {
-					log.Printf("Error iterating during garbage collection: %v", err)
-					break
-				}
-
-				// Delete the expired document
-				_, err = doc.Ref.Delete(ctx)
-				if err == nil {
-					deletedCount++
-					log.Printf("Garbage Collector deleted expired JobID: %s", doc.Ref.ID)
-				} else {
-					log.Printf("Failed to delete expired JobID %s: %v", doc.Ref.ID, err)
-				}
-			}
-			if deletedCount > 0 {
-				log.Printf("Garbage collection complete. Deleted %d old jobs.", deletedCount)
-			}
+			_, _, _ = performGarbageCollection(fsClient)
 		}
 	}()
 }
@@ -161,8 +174,44 @@ func main() {
 	// 3. Setup Router
 	r := gin.Default()
 
+	// Enable CORS for local development
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	})
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "Gateway Active"})
+	})
+
+	r.GET("/api/gc", func(c *gin.Context) {
+		if fsClient == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Firestore not connected"})
+			return
+		}
+		deletedCount, deletedIds, err := performGarbageCollection(fsClient)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":         err.Error(),
+				"deleted_count": deletedCount,
+				"deleted_ids":   deletedIds,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":        "success",
+			"deleted_count": deletedCount,
+			"deleted_ids":   deletedIds,
+		})
 	})
 
 	api := r.Group("/api")

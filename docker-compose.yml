@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: quantum-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  quantum-engine:
+    build:
+      context: ./google_composer
+      dockerfile: Dockerfile
+    container_name: quantum-engine
+    restart: always
+    environment:
+      - API_HOST=0.0.0.0
+      - PORT=5001
+    ports:
+      - "5001:5001"
+
+  go-gateway:
+    build:
+      context: ./google_composer/go-gateway
+      dockerfile: Dockerfile
+    container_name: quantum-gateway
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=development
+      - PORT=8080
+      - REDIS_ADDR=redis:6379
+      - ENGINE_URL=http://quantum-engine:5001/run
+      - FIREBASE_CREDENTIALS=/app/firebase-service-account.json
+    depends_on:
+      - redis
+      - quantum-engine
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: quantum-frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - go-gateway
+
+volumes:
+  redis_data:

@@ -41,8 +41,14 @@ class RunRequest(BaseModel):
     return_state_vector: bool = False
 
 # OPTIMIZED: Global Simulator Instance (Thread-safe execution)
-global_qsim_options = qsimcirq.QSimOptions(use_gpu=True) 
-global_qsim_sim = qsimcirq.QSimSimulator(qsim_options=global_qsim_options)
+try:
+    global_qsim_options = qsimcirq.QSimOptions(use_gpu=True) 
+    global_qsim_sim = qsimcirq.QSimSimulator(qsim_options=global_qsim_options)
+    logger.info("Quantum simulator initialized successfully with GPU support.")
+except ValueError as e:
+    logger.warning(f"GPU execution failed to initialize ({e}). Falling back to CPU simulation.")
+    global_qsim_options = qsimcirq.QSimOptions(use_gpu=False) 
+    global_qsim_sim = qsimcirq.QSimSimulator(qsim_options=global_qsim_options)
 
 @lru_cache(maxsize=1024)
 def get_cached_transpiled_circuit(circuit_json: str, target_name: str) -> cirq.Circuit:
@@ -55,8 +61,7 @@ def get_cached_transpiled_circuit(circuit_json: str, target_name: str) -> cirq.C
         raise ValueError(f"Unknown target: {target_name}")
 
     logger.info(f"Transpiling (Cache Miss) -> {target_name}")
-    cirq.optimize_for_target_gateset(circuit, gateset=gateset)
-    return circuit
+    return cirq.optimize_for_target_gateset(circuit, gateset=gateset)
 
 def apply_noise(circuit: cirq.Circuit, noise_config: NoiseConfig) -> cirq.Circuit:
     if not noise_config: return circuit
